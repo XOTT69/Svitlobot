@@ -9,29 +9,26 @@ from telegram.ext import (
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHANNEL_ID = -1003534080985
-TARGET = "2.2"
 
 
 def build_22_message(text: str) -> str | None:
     lines = [l for l in text.splitlines() if l.strip()]
-
     if not lines:
         return None
 
-    # Шапка: просто перший непорожній рядок (зазвичай "💡 О 18:00" / "Зміни у графіку ...")
     header = lines[0]
 
-    # Перший рядок, де є "2.2"
     line_22 = None
     for line in lines:
-        if TARGET in line:
+        if "2.2" in line:
             line_22 = line
             break
 
     if not line_22:
+        if "Зміни у графіку" in header:
+            return header
         return None
 
-    # Якщо рядок 2.2 співпав із шапкою — шлемо тільки його
     if line_22 == header:
         return line_22
 
