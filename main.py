@@ -14,36 +14,55 @@ CHANNEL_ID = -1003534080985
 def build_22_message(text: str) -> str | None:
     lines = text.splitlines()
 
-    # Шапка = перші два непорожні рядки
-    header = []
+    # Шапка: перший непорожній рядок
+    header = None
     for line in lines:
         if line.strip():
-            header.append(line)
-        if len(header) == 2:
+            header = line
             break
-
-    # знайти рядок "Підгрупа 2.2 ..."
-    start = None
-    for i, line in enumerate(lines):
-        if "Підгрупа" in line and "2.2" in line:
-            start = i
-            break
-
-    if start is None:
+    if header is None:
         return None
 
-    # блок 2.2: від заголовка до першої порожньої строки після нього
-    block = []
-    for line in lines[start:]:
-        if line.strip() == "" and block:
+    # ===== 1) Формат "Підгрупа 2.2 відключення" (Зміни у графіку) =====
+    start_22 = None
+    for i, line in enumerate(lines):
+        if "Підгрупа" in line and "2.2" in line:
+            start_22 = i
             break
-        block.append(line)
 
-    # приберемо пусті рядки на краях
-    block = [l for l in block if l.strip()]
+    if start_22 is not None:
+        # блок 2.2: від заголовка до першої пустої строки
+        block = []
+        for line in lines[start_22:]:
+            if line.strip() == "" and block:
+                break
+            block.append(line)
+        block = [l for l in block if l.strip()]
 
-    result_lines = header + [""] + block
-    return "\n".join(result_lines).strip()
+        # шапка = перші два непорожні рядки
+        header_lines = []
+        for line in lines:
+            if line.strip():
+                header_lines.append(line)
+            if len(header_lines) == 2:
+                break
+
+        result_lines = header_lines + [""] + block
+        return "\n".join(result_lines).strip()
+
+    # ===== 2) Формат "О 18:30 / Вмикаємо 2.2 підгрупу" =====
+    line_22 = None
+    for line in lines:
+        if "2.2" in line and "підгрупу" in line:
+            line_22 = line
+            break
+
+    if line_22:
+        if line_22 == header:
+            return line_22
+        return f"{header}\n{line_22}"
+
+    return None
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
