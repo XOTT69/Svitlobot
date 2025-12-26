@@ -13,33 +13,29 @@ TARGET = "2.2"
 
 
 def build_22_message(text: str) -> str | None:
-    lines = text.splitlines()
+    lines = [l for l in text.splitlines() if l.strip()]
 
-    # Шапка: усі непорожні рядки до першої пустої строки
-    header = []
-    for line in lines:
-        if not line.strip():
-            break
-        header.append(line)
-
-    # Усі рядки, де зустрічається "2.2"
-    body_raw = [line for line in lines if TARGET in line]
-
-    if not body_raw:
+    if not lines:
         return None
 
-    # Прибираємо слова "Підгрупа", "підгрупу" і зайві двокрапки
-    body = []
-    for line in body_raw:
-        clean = (
-            line.replace("Підгрупа", "")
-                .replace("підгрупу", "")
-                .replace("підгрупи", "")
-        )
-        body.append(clean.strip())
+    # Шапка: просто перший непорожній рядок (зазвичай "💡 О 18:00" / "Зміни у графіку ...")
+    header = lines[0]
 
-    result = header + [""] + body
-    return "\n".join(result).strip()
+    # Перший рядок, де є "2.2"
+    line_22 = None
+    for line in lines:
+        if TARGET in line:
+            line_22 = line
+            break
+
+    if not line_22:
+        return None
+
+    # Якщо рядок 2.2 співпав із шапкою — шлемо тільки його
+    if line_22 == header:
+        return line_22
+
+    return f"{header}\n{line_22}"
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
