@@ -14,42 +14,35 @@ CHANNEL_ID = -1003534080985
 def build_22_message(text: str) -> str | None:
     lines = text.splitlines()
 
-    # знайти перший непорожній рядок як шапку
-    header = None
-    header_index = None
-    for i, line in enumerate(lines):
+    # Шапка = перші два непорожні рядки
+    header = []
+    for line in lines:
         if line.strip():
-            header = line
-            header_index = i
+            header.append(line)
+        if len(header) == 2:
             break
-    if header is None:
-        return None
 
-    # знайти перший рядок, де є "2.2"
+    # знайти рядок "Підгрупа 2.2 ..."
     start = None
     for i, line in enumerate(lines):
-        if "2.2" in line:
+        if "Підгрупа" in line and "2.2" in line:
             start = i
             break
 
     if start is None:
-        # немає 2.2 → можна, наприклад, нічого не слати
-        # або повернути тільки шапку, якщо це зміни в графіку
-        if "Зміни у графіку" in header:
-            return header
         return None
 
-    # збираємо блок 2.2 до першої пустої строки після нього
+    # блок 2.2: від заголовка до першої порожньої строки після нього
     block = []
     for line in lines[start:]:
         if line.strip() == "" and block:
             break
         block.append(line)
 
-    # чистимо порожні рядки на краях
+    # приберемо пусті рядки на краях
     block = [l for l in block if l.strip()]
 
-    result_lines = [header, ""] + block
+    result_lines = header + [""] + block
     return "\n".join(result_lines).strip()
 
 
