@@ -12,27 +12,45 @@ CHANNEL_ID = -1003534080985
 
 
 def build_22_message(text: str) -> str | None:
-    lines = [l for l in text.splitlines() if l.strip()]
-    if not lines:
+    lines = text.splitlines()
+
+    # знайти перший непорожній рядок як шапку
+    header = None
+    header_index = None
+    for i, line in enumerate(lines):
+        if line.strip():
+            header = line
+            header_index = i
+            break
+    if header is None:
         return None
 
-    header = lines[0]
-
-    line_22 = None
-    for line in lines:
+    # знайти перший рядок, де є "2.2"
+    start = None
+    for i, line in enumerate(lines):
         if "2.2" in line:
-            line_22 = line
+            start = i
             break
 
-    if not line_22:
+    if start is None:
+        # немає 2.2 → можна, наприклад, нічого не слати
+        # або повернути тільки шапку, якщо це зміни в графіку
         if "Зміни у графіку" in header:
             return header
         return None
 
-    if line_22 == header:
-        return line_22
+    # збираємо блок 2.2 до першої пустої строки після нього
+    block = []
+    for line in lines[start:]:
+        if line.strip() == "" and block:
+            break
+        block.append(line)
 
-    return f"{header}\n{line_22}"
+    # чистимо порожні рядки на краях
+    block = [l for l in block if l.strip()]
+
+    result_lines = [header, ""] + block
+    return "\n".join(result_lines).strip()
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
