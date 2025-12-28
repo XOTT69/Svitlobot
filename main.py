@@ -12,7 +12,7 @@ from telegram.ext import (
     filters,
 )
 
-# ================== CONFIG ==================
+# CONFIG
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 CHANNEL_ID = int(os.environ.get("CHANNEL_ID", "-1003534080985"))
 TAPO_EMAIL = os.environ["TAPO_USERNAME"]
@@ -24,17 +24,14 @@ device_id = None
 last_state = None
 power_off_at = None
 
-# ================== HELPERS ==================
 def kyiv_time():
     return datetime.now(ZoneInfo("Europe/Kyiv")).strftime("%H:%M")
 
-# ================== TP-LINK CLOUD ==================
 def cloud_login():
     global cloud_token
-    print("🔌 Логін TP-Link...")
+    print("🔌 TP-Link логін...")
     r = requests.post(CLOUD_URL, json={
-        "method": "login",
-        "params": {
+        "method": "login", "params": {
             "appType": "Tapo_Android",
             "cloudUserName": TAPO_EMAIL,
             "cloudPassword": TAPO_PASSWORD,
@@ -42,39 +39,25 @@ def cloud_login():
         }
     }, timeout=15).json()
     cloud_token = r["result"]["token"]
-    print("✅ Авторизація OK")
+    print("✅ Логін OK")
 
 def fetch_device_id():
     global device_id
-    print("🔍 Шукаємо розетку...")
-    r = requests.post(
-        f"{CLOUD_URL}/?token={cloud_token}",
-        json={"method": "getDeviceList"},
-        timeout=15
-    ).json()
-
+    print("🔍 Розетки...")
+    r = requests.post(f"{CLOUD_URL}/?token={cloud_token}", json={"method": "getDeviceList"}, timeout=15).json()
     devices = r["result"]["deviceList"]
-    print(f"📱 Пристроїв: {len(devices)}")
     
     for d in devices:
-        device_type = d.get("deviceType", "").upper()
-        device_name = d.get("nickname", "Unknown")
-        print(f"  → {device_name}: {device_type}")
-        
-        if "PLUG" in device_type:
+        if "PLUG" in d.get("deviceType", "").upper():
             device_id = d["deviceId"]
-            print(f"✅ РОЗЕТКА: {device_name} ({device_type})")
+            print(f"✅ P110: {d.get('nickname', 'Unknown')} ID={device_id[:8]}")
             return True
     
-    if devices:
-        device_id = devices[0]["deviceId"]
-        print(f"ℹ️ Fallback: {devices[0].get('nickname', 'Unknown')}")
-        return True
-    
-    print("⚠️ Розеток НЕТ")
+    print("⚠️ P110 НЕ ЗНАЙДЕНО")
     return False
 
 def power_present():
+    """✅ P110: онлайн = світло Є, офлайн = світла НЕМАЄ"""
     if not device_id: return True
     
     try:
@@ -90,12 +73,17 @@ def power_present():
             timeout=10
         ).json()
         
-        response_data = r["result"]["responseData"]
-        return response_data.get("device_on", True) if "device_on" in response_data else True
-    except:
-        return True
+        # ✅ P110 ЛОГІКА: якщо responseData Є = розетка онлайн = СВІТЛО Є
+        has_response = bool(r["result"].get("responseData"))
+        device_on = r["result"]["responseData"].get("device_on", False) if has_response else False
+        
+        print(f"🔌 P110: response={has_response}, device_on={device_on}")
+        return has_response  # ✅ КЛЮЧ: онлайн = світло!
+        
+    except Exception as e:
+        print(f"⚠️ P110 помилка: {e}")
+        return False  # ❌ Offline = немає світла
 
-# ================== DTEK 2.2 ==================
 def build_22_message(text: str):
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     if not lines: return None
@@ -105,7 +93,6 @@ def build_22_message(text: str):
             return f"{header}\n\n📍 {line}"
     return None
 
-# ================== HANDLERS ==================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text or update.message.caption or ""
     payload = build_22_message(text)
@@ -116,40 +103,34 @@ async def power_job(context: ContextTypes.DEFAULT_TYPE):
     global last_state, power_off_at
     state = power_present()
     
-    if state == last_state: return
+    print(f"⏰ [{kyiv_time()}] Світло: {'Є' if state else 'НЕМАЄ'}")
+    
+    if state == last_state: 
+        return
     
     now = kyiv_time()
     if not state:
         power_off_at = time.time()
         await context.bot.send_message(chat_id=CHANNEL_ID, text=f"⚡ Світло зникло — {now}")
-        print(f"⚡ БЕЗ СВІТЛА: {now}")
+        print(f"🚨 АВАРІЯ: {now}")
     else:
         minutes = int((time.time() - power_off_at) / 60) if power_off_at else 0
         await context.bot.send_message(chat_id=CHANNEL_ID, text=f"🔌 Світло зʼявилось — {now}\n⏱️ Не було: {minutes} хв")
-        print(f"🔌 СВІТЛО Є: {now}")
+        print(f"✅ ВІДНОВЛЕНО: {now}")
     
     last_state = state
 
-# ================== RAILWAY COMPATIBLE MAIN ==================
 def main():
-    print("🚀 === SVITLOBOT START ===")
-    
+    print("🚀 SVITLOBOT P110")
     cloud_login()
-    tplink_ok = fetch_device_id()
-    print(f"🔌 TP-Link: {'✅ OK' if tplink_ok else '⚠️ NO'}")
+    if fetch_device_id():
+        print("✅ Розетка готова!")
     
-    print("🤖 Telegram bot...")
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-    
-    print(f"✅ JobQueue: {'OK' if app.job_queue else 'FAIL'}")
-    
     app.add_handler(MessageHandler((filters.TEXT | filters.CAPTION) & ~filters.COMMAND, handle_message))
-    app.job_queue.run_repeating(power_job, interval=60, first=10)
+    app.job_queue.run_repeating(power_job, interval=30, first=10)  # ⏱️ 30 сек
     
-    print("🎉 ✅ ✅ DTEK + TP-Link АКТИВНІ!")
-    print("🚀 Railway-сумісний polling...")
-    
-    # ✅ RAILWAY FIX: синхронний run_polling
+    print("🎉 DTEK 2.2 + P110 МОНІТОРИНГ!")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
