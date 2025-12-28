@@ -3,14 +3,14 @@ import time
 import requests
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from typing import Dict
 
+from fastapi import FastAPI, Request
 from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    ContextTypes,
-    MessageHandler,
-    filters,
-)
+from telegram.ext import Application, ContextTypes, MessageHandler, filters
+
+app = FastAPI()
+application = None
 
 # CONFIG
 BOT_TOKEN = os.environ["BOT_TOKEN"]
@@ -45,9 +45,7 @@ def fetch_device_id():
     global device_id
     print("🔍 Розетки...")
     r = requests.post(f"{CLOUD_URL}/?token={cloud_token}", json={"method": "getDeviceList"}, timeout=15).json()
-    devices = r["result"]["deviceList"]
-    
-    for d in devices:
+    for d in r["result"]["deviceList"]:
         if "PLUG" in d.get("deviceType", "").upper():
             device_id = d["deviceId"]
             print(f"✅ P110: {d.get('nickname', 'Unknown')}")
@@ -62,30 +60,21 @@ def power_present():
                 "deviceId": device_id, "requestData": '{"method":"get_device_info"}'
             }
         }, timeout=10).json()
-        
         data = r["result"]["responseData"]
-        power = data.get("current_power", 0)
-        print(f"🔌 P110: {power}W")
-        return power > 1  # >1W = світло
-        
-    except Exception as e:
-        print(f"⚠️ P110: {e}")
+        power = data.get("current_power", 0) / 1000  # mW → W
+        print(f"🔌 P110: {power:.1f}W")
+        return power > 0.5  # >0.5W = світло
+    except:
         return True
-
-def build_22_message(text: str):
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    if not lines: return None
-    header = lines[0]
-    for line in lines:
-        if "2.2" in line and ("Підгрупа" in line or "підгрупу" in line):
-            return f"{header}\n\n📍 {line}"
-    return None
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text or update.message.caption or ""
-    payload = build_22_message(text)
-    if payload:
-        await context.bot.send_message(chat_id=CHANNEL_ID, text=payload)
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    if not lines: return
+    header = lines[0]
+    for line in lines:
+        if "2.2" in line and ("Підгрупа" in line or "підгрупу" in line):
+            await context.bot.send_message(chat_id=CHANNEL_ID, text=f"{header}\n\n📍 {line}")
 
 async def power_job(context: ContextTypes.DEFAULT_TYPE):
     global last_state, power_off_at
@@ -97,36 +86,41 @@ async def power_job(context: ContextTypes.DEFAULT_TYPE):
     if not state:
         power_off_at = time.time()
         await context.bot.send_message(chat_id=CHANNEL_ID, text=f"⚡ Світло зникло — {now}")
-        print(f"🚨 ВІДКЛЮЧЕННЯ: {now}")
     else:
         minutes = int((time.time() - power_off_at) / 60) if power_off_at else 0
         await context.bot.send_message(chat_id=CHANNEL_ID, text=f"🔌 Світло зʼявилось — {now}\n⏱️ Не було: {minutes} хв")
-        print(f"✅ ВІДНОВЛЕНО: {now}")
     
     last_state = state
 
-def main():
-    print("🚀 ANTI-CONFLICT BOT")
+@app.on_startup
+async def startup():
+    global application
+    print("🚀 STARTUP...")
     
     cloud_login()
     fetch_device_id()
     
-    # ✅ ANTI-CONFLICT: чистий запуск
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    
-    # ✅ Спочатку handlers, потім job_queue
-    app.add_handler(MessageHandler((filters.TEXT | filters.CAPTION) & ~filters.COMMAND, handle_message))
-    app.job_queue.run_repeating(power_job, interval=30, first=10)
-    
-    print("🎉 DTEK + P110 АКТИВНІ!")
-    print("🚀 ЧИСТИЙ polling...")
-    
-    # ✅ ФІНАЛЬНИЙ ANTI-CONFLICT
-    app.run_polling(
-        drop_pending_updates=True,
-        timeout=10,
-        bootstrap_retries=-1  # нескінченні ретраї
+    application = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .concurrent_updates(True)
+        .build()
     )
+    
+    application.add_handler(MessageHandler((filters.TEXT | filters.CAPTION) & ~filters.COMMAND, handle_message))
+    application.job_queue.run_repeating(power_job, interval=30, first=10)
+    
+    # WEBHOOK
+    webhook_url = f"https://{os.getenv('RAILWAY_STATIC_URL')}/webhook"
+    await application.bot.set_webhook(webhook_url)
+    print(f"✅ Webhook: {webhook_url}")
 
-if __name__ == "__main__":
-    main()
+@app.post("/webhook")
+async def webhook(request: Request):
+    update = Update.de_json(await request.json(), application.bot)
+    await application.process_update(update)
+    return {"ok": True}
+
+@app.get("/")
+async def root():
+    return {"status": "SvitloBot P110 OK"}
