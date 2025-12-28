@@ -50,25 +50,35 @@ def cloud_login():
                 "terminalUUID": "svitlobot"
             }
         },
-        timeout=10
+        timeout=15
     ).json()
+
     cloud_token = r["result"]["token"]
 
 
 def fetch_device_id():
     global device_id
+
     r = requests.post(
         f"{CLOUD_URL}/?token={cloud_token}",
         json={"method": "getDeviceList"},
-        timeout=10
+        timeout=15
     ).json()
 
-    for d in r["result"]["deviceList"]:
-        if d.get("deviceType") == "SMART.PLUG":
+    devices = r["result"]["deviceList"]
+
+    # 1️⃣ шукаємо будь-яку розетку
+    for d in devices:
+        if "PLUG" in (d.get("deviceType") or "").upper():
             device_id = d["deviceId"]
             return
 
-    raise RuntimeError("Tapo P110 не знайдено")
+    # 2️⃣ fallback — просто перший пристрій
+    if devices:
+        device_id = devices[0]["deviceId"]
+        return
+
+    raise RuntimeError("Tapo пристрої не знайдені")
 
 
 def power_present() -> bool:
@@ -82,16 +92,16 @@ def power_present() -> bool:
                     "requestData": '{"method":"get_device_info"}'
                 }
             },
-            timeout=10
+            timeout=15
         ).json()
 
-        # якщо відповідь є → розетка онлайн → є світло
+        # якщо є responseData → пристрій онлайн → світло є
         return bool(r["result"]["responseData"])
     except:
         return False
 
 
-# ---------- 2.2 PARSER (ТВІЙ КОД) ----------
+# ---------- 2.2 PARSER ----------
 def build_22_message(text: str) -> str | None:
     lines = text.splitlines()
 
@@ -124,8 +134,7 @@ def build_22_message(text: str) -> str | None:
             if len(header_lines) == 2:
                 break
 
-        result_lines = header_lines + [""] + block
-        return "\n".join(result_lines).strip()
+        return "\n".join(header_lines + [""] + block).strip()
 
     for line in lines:
         if "2.2" in line and "підгрупу" in line:
@@ -168,7 +177,6 @@ async def power_job(context: ContextTypes.DEFAULT_TYPE):
                 chat_id=CHANNEL_ID,
                 text=f"⚡ Світло зникло — {now}"
             )
-
         else:
             minutes = int((time.time() - power_off_at) / 60) if power_off_at else 0
             await context.bot.send_message(
@@ -194,7 +202,6 @@ def main():
         handle_message,
     ))
 
-    # авто-перевірка світла
     app.job_queue.run_repeating(power_job, interval=CHECK_INTERVAL, first=5)
 
     app.run_polling()
