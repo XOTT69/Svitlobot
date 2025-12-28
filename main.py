@@ -192,18 +192,26 @@ async def power_job(context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- MAIN ----------
 def main():
+    # Ініціалізація TP-Link ДО створення Application
     cloud_login()
     fetch_device_id()
 
+    # ✅ Виправлення: job_queue через application.job_queue після build()
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+    
+    # ✅ Перевіряємо наявність job_queue
+    if app.job_queue is None:
+        raise RuntimeError("JobQueue недоступний. Оновіть python-telegram-bot до v20+")
 
     app.add_handler(MessageHandler(
         (filters.TEXT | filters.CAPTION) & ~filters.COMMAND,
         handle_message,
     ))
 
+    # ✅ Правильний синтаксис для v20+
     app.job_queue.run_repeating(power_job, interval=CHECK_INTERVAL, first=5)
 
+    print(f"🚀 Бот запущено. Перевірка світла кожні {CHECK_INTERVAL}с")
     app.run_polling()
 
 
