@@ -29,7 +29,7 @@ def kyiv_time():
 
 def cloud_login():
     global cloud_token
-    print("🔌 TP-Link логін...")
+    print("🔌 TP-Link...")
     r = requests.post(CLOUD_URL, json={
         "method": "login", "params": {
             "appType": "Tapo_Android",
@@ -52,12 +52,10 @@ def fetch_device_id():
             device_id = d["deviceId"]
             print(f"✅ P110: {d.get('nickname', 'Unknown')} ID={device_id[:8]}")
             return True
-    
-    print("⚠️ P110 НЕ ЗНАЙДЕНО")
     return False
 
 def power_present():
-    """✅ P110: онлайн = світло Є, офлайн = світла НЕМАЄ"""
+    """P110: перевіряємо НАВАНТАЖЕННЯ, не device_on"""
     if not device_id: return True
     
     try:
@@ -73,16 +71,19 @@ def power_present():
             timeout=10
         ).json()
         
-        # ✅ P110 ЛОГІКА: якщо responseData Є = розетка онлайн = СВІТЛО Є
-        has_response = bool(r["result"].get("responseData"))
-        device_on = r["result"]["responseData"].get("device_on", False) if has_response else False
+        response_data = r["result"]["responseData"]
+        print(f"🔌 P110 DEBUG: {response_data}")
         
-        print(f"🔌 P110: response={has_response}, device_on={device_on}")
-        return has_response  # ✅ КЛЮЧ: онлайн = світло!
+        # ✅ P110 НАВАНТАЖЕННЯ > 1W = світло Є
+        current_power = response_data.get("current_power", 0)
+        overload = response_data.get("overload", False)
+        
+        print(f"🔌 Потужність: {current_power}W, Overload: {overload}")
+        return current_power > 1 or overload  # >1W = світло
         
     except Exception as e:
-        print(f"⚠️ P110 помилка: {e}")
-        return False  # ❌ Offline = немає світла
+        print(f"⚠️ P110 error: {e}")
+        return True
 
 def build_22_message(text: str):
     lines = [l.strip() for l in text.splitlines() if l.strip()]
@@ -105,14 +106,13 @@ async def power_job(context: ContextTypes.DEFAULT_TYPE):
     
     print(f"⏰ [{kyiv_time()}] Світло: {'Є' if state else 'НЕМАЄ'}")
     
-    if state == last_state: 
-        return
+    if state == last_state: return
     
     now = kyiv_time()
     if not state:
         power_off_at = time.time()
         await context.bot.send_message(chat_id=CHANNEL_ID, text=f"⚡ Світло зникло — {now}")
-        print(f"🚨 АВАРІЯ: {now}")
+        print(f"🚨 ВІДКЛЮЧЕННЯ: {now}")
     else:
         minutes = int((time.time() - power_off_at) / 60) if power_off_at else 0
         await context.bot.send_message(chat_id=CHANNEL_ID, text=f"🔌 Світло зʼявилось — {now}\n⏱️ Не було: {minutes} хв")
@@ -121,16 +121,23 @@ async def power_job(context: ContextTypes.DEFAULT_TYPE):
     last_state = state
 
 def main():
-    print("🚀 SVITLOBOT P110")
+    print("🚀 P110 + DTEK BOT")
+    
     cloud_login()
     if fetch_device_id():
-        print("✅ Розетка готова!")
+        print("✅ Розетка підключена!")
     
+    # ✅ BOT CONFLICT FIX
+    print("🤖 Новий бот...")
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(MessageHandler((filters.TEXT | filters.CAPTION) & ~filters.COMMAND, handle_message))
-    app.job_queue.run_repeating(power_job, interval=30, first=10)  # ⏱️ 30 сек
     
-    print("🎉 DTEK 2.2 + P110 МОНІТОРИНГ!")
+    # ✅ ОЧИСТИМО СТАРІ UPDATE
+    app.run_polling(drop_pending_updates=True, allowed_updates=[])
+    
+    app.add_handler(MessageHandler((filters.TEXT | filters.CAPTION) & ~filters.COMMAND, handle_message))
+    app.job_queue.run_repeating(power_job, interval=30, first=10)
+    
+    print("🎉 ✅ ✅ АКТИВНО: DTEK 2.2 + P110 НАВАНТАЖЕННЯ!")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
