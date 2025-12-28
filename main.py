@@ -1,82 +1,100 @@
 import os
-import asyncio
-from dotenv import load_dotenv
+import time
+import requests
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from telegram import Update
 from telegram.ext import (
-    ApplicationBuilder, ContextTypes, 
-    MessageHandler, CommandHandler, filters
+    ApplicationBuilder,
+    ContextTypes,
+    MessageHandler,
+    filters,
 )
-from tapo import ApiClient
 
-load_dotenv()
-
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+# ================== CONFIG ==================
+BOT_TOKEN = os.environ["BOT_TOKEN"]
 CHANNEL_ID = -1003534080985
-TAPO_USERNAME = os.getenv("TAPO_USERNAME")
-TAPO_PASSWORD = os.getenv("TAPO_PASSWORD")
-TAPO_IP = os.getenv("TAPO_IP")
 
-# Глобальні змінні
-tapo_client = None
-tapo_device = None
-last_state = None
-monitoring_active = False
+TAPO_EMAIL = os.environ["TAPO_USERNAME"]
+TAPO_PASSWORD = os.environ["TAPO_PASSWORD"]
+TAPO_REGION = "eu"  # Україна
 
-async def init_tapo():
-    global tapo_client, tapo_device
+CHECK_INTERVAL = 60  # сек
+# ============================================
+
+CLOUD_URL = f"https://{TAPO_REGION}-wap.tplinkcloud.com"
+cloud_token = None
+device_id = None
+
+last_power_state = None
+power_off_at = None
+
+
+# ---------- UTIL ----------
+def kyiv_time():
+    return datetime.now(ZoneInfo("Europe/Kyiv")).strftime("%H:%M")
+
+
+# ---------- TP-LINK CLOUD ----------
+def cloud_login():
+    global cloud_token
+    r = requests.post(
+        f"{CLOUD_URL}/",
+        json={
+            "method": "login",
+            "params": {
+                "appType": "Tapo_Android",
+                "cloudUserName": TAPO_EMAIL,
+                "cloudPassword": TAPO_PASSWORD,
+                "terminalUUID": "svitlobot"
+            }
+        },
+        timeout=10
+    ).json()
+    cloud_token = r["result"]["token"]
+
+
+def fetch_device_id():
+    global device_id
+    r = requests.post(
+        f"{CLOUD_URL}/?token={cloud_token}",
+        json={"method": "getDeviceList"},
+        timeout=10
+    ).json()
+
+    for d in r["result"]["deviceList"]:
+        if d.get("deviceType") == "SMART.PLUG":
+            device_id = d["deviceId"]
+            return
+
+    raise RuntimeError("Tapo P110 не знайдено")
+
+
+def power_present() -> bool:
     try:
-        tapo_client = ApiClient(TAPO_USERNAME, TAPO_PASSWORD)
-        tapo_device = await tapo_client.p110(TAPO_IP)
-        print(f"✅ Tapo P110 {TAPO_IP} підключена!")
-    except Exception as e:
-        print(f"❌ Помилка Tapo: {e}")
+        r = requests.post(
+            f"{CLOUD_URL}/?token={cloud_token}",
+            json={
+                "method": "passthrough",
+                "params": {
+                    "deviceId": device_id,
+                    "requestData": '{"method":"get_device_info"}'
+                }
+            },
+            timeout=10
+        ).json()
 
-async def get_light_status() -> str:
-    try:
-        if not tapo_device:
-            return "❌ Tapo недоступна"
-        info = await tapo_device.get_device_info()
-        state = info.device_state.state
-        return "Світло є ✅" if state else "Світла нема ❌"
+        # якщо відповідь є → розетка онлайн → є світло
+        return bool(r["result"]["responseData"])
     except:
-        return "❌ Помилка перевірки статусу"
+        return False
 
-async def light_on():
-    try:
-        if tapo_device:
-            await tapo_device.on()
-            return True
-    except:
-        pass
-    return False
 
-async def light_off():
-    try:
-        if tapo_device:
-            await tapo_device.off()
-            return True
-    except:
-        pass
-    return False
-
-async def monitor_light(context: ContextTypes.DEFAULT_TYPE):
-    """Авто-моніторинг кожні 30 сек"""
-    global last_state
-    try:
-        status = await get_light_status()
-        current_state = "Світло є ✅" in status
-        
-        if last_state is not None and current_state != last_state:
-            change_msg = "💡 Світло з'явилось! ✅" if current_state else "💡 Світло зникло! ❌"
-            await context.bot.send_message(chat_id=CHANNEL_ID, text=change_msg)
-            print(f"🔔 Авто-сповіщення: {change_msg}")
-        
-        last_state = current_state
-    except Exception as e:
-        print(f"⚠️ Моніторинг помилка: {e}")
-
+# ---------- 2.2 PARSER (ТВІЙ КОД) ----------
 def build_22_message(text: str) -> str | None:
     lines = text.splitlines()
+
     header = None
     for line in lines:
         if line.strip():
@@ -98,92 +116,89 @@ def build_22_message(text: str) -> str | None:
                 break
             block.append(line)
         block = [l for l in block if l.strip()]
+
         header_lines = []
         for line in lines:
             if line.strip():
                 header_lines.append(line)
             if len(header_lines) == 2:
                 break
+
         result_lines = header_lines + [""] + block
         return "\n".join(result_lines).strip()
 
-    line_22 = None
     for line in lines:
         if "2.2" in line and "підгрупу" in line:
-            line_22 = line
-            break
+            if line == header:
+                return line
+            return f"{header}\n{line}"
 
-    if line_22:
-        if line_22 == header:
-            return line_22
-        return f"{header}\n{line_22}"
     return None
 
+
+# ---------- MESSAGE HANDLER ----------
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if not msg:
         return
+
     text = msg.text or msg.caption or ""
     if not text:
         return
+
     payload = build_22_message(text)
-    if payload:
-        await context.bot.send_message(chat_id=CHANNEL_ID, text=payload)
-
-# Команди
-async def cmd_light_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    status = await get_light_status()
-    await update.message.reply_text(status)
-    await context.bot.send_message(chat_id=CHANNEL_ID, text=status)
-
-async def cmd_light_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    success = await light_on()
-    status = await get_light_status()
-    msg = f"🔌 ВКЛ / {status}" if success else f"❌ Не вдалось / {status}"
-    await update.message.reply_text(msg)
-    await context.bot.send_message(chat_id=CHANNEL_ID, text=status)
-
-async def cmd_light_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    success = await light_off()
-    status = await get_light_status()
-    msg = f"🔌 ВИКЛ / {status}" if success else f"❌ Не вдалось / {status}"
-    await update.message.reply_text(msg)
-    await context.bot.send_message(chat_id=CHANNEL_ID, text=status)
-
-async def cmd_monitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global monitoring_active
-    if not monitoring_active:
-        monitoring_active = True
-        context.job_queue.run_repeating(monitor_light, interval=30, first=5)
-        await update.message.reply_text("👀 Моніторинг увімкнено!")
-        print("👀 Моніторинг запущено")
-    else:
-        await update.message.reply_text("👀 Моніторинг вже працює")
-
-async def post_init(application):
-    await init_tapo()
-    # АВТО-Запуск моніторингу при старті!
-    global monitoring_active
-    monitoring_active = True
-    application.job_queue.run_repeating(monitor_light, interval=30, first=10)
-    print("🚀 Авто-моніторинг запущено (кожні 30 сек)")
-
-def main():
-    if not BOT_TOKEN:
-        print("❌ BOT_TOKEN не знайдено!")
+    if not payload:
         return
-    
-    app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
 
-    app.add_handler(MessageHandler((filters.TEXT | filters.CAPTION) & ~filters.COMMAND, handle_message))
-    app.add_handler(CommandHandler("light", cmd_light_status))
-    app.add_handler(CommandHandler("on", cmd_light_on))
-    app.add_handler(CommandHandler("off", cmd_light_off))
-    app.add_handler(CommandHandler("monitor", cmd_monitor))
+    await context.bot.send_message(chat_id=CHANNEL_ID, text=payload)
 
-    print("🚀 Бот з авто-моніторингом запущено!")
-    print(f"📡 Розетка: {TAPO_IP}")
+
+# ---------- AUTO POWER CHECK ----------
+async def power_job(context: ContextTypes.DEFAULT_TYPE):
+    global last_power_state, power_off_at
+
+    state = power_present()
+
+    if state != last_power_state:
+        now = kyiv_time()
+
+        if not state:
+            power_off_at = time.time()
+            await context.bot.send_message(
+                chat_id=CHANNEL_ID,
+                text=f"⚡ Світло зникло — {now}"
+            )
+
+        else:
+            minutes = int((time.time() - power_off_at) / 60) if power_off_at else 0
+            await context.bot.send_message(
+                chat_id=CHANNEL_ID,
+                text=(
+                    f"🔌 Світло зʼявилось — {now}\n"
+                    f"⏱️ Не було світла: {minutes} хв"
+                )
+            )
+
+        last_power_state = state
+
+
+# ---------- MAIN ----------
+def main():
+    cloud_login()
+    fetch_device_id()
+
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    app.add_handler(MessageHandler(
+        (filters.TEXT | filters.CAPTION) & ~filters.COMMAND,
+        handle_message,
+    ))
+
+    # авто-перевірка світла
+    app.job_queue.run_repeating(power_job, interval=CHECK_INTERVAL, first=5)
+
     app.run_polling()
+
 
 if __name__ == "__main__":
     main()
