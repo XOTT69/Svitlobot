@@ -1,6 +1,5 @@
 import os
 import time
-import asyncio
 import requests
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -55,17 +54,16 @@ def fetch_device_id():
     ).json()
 
     devices = r["result"]["deviceList"]
-    print(f"📱 Знайдено пристроїв: {len(devices)}")
+    print(f"📱 Пристроїв: {len(devices)}")
     
     for d in devices:
         device_type = d.get("deviceType", "").upper()
         device_name = d.get("nickname", "Unknown")
         print(f"  → {device_name}: {device_type}")
         
-        # ✅ Твоя розетка!
         if "PLUG" in device_type:
             device_id = d["deviceId"]
-            print(f"✅ ✅ РОЗЕТКА: {device_name} ({device_type}) ID={device_id[:8]}")
+            print(f"✅ РОЗЕТКА: {device_name} ({device_type})")
             return True
     
     if devices:
@@ -73,12 +71,11 @@ def fetch_device_id():
         print(f"ℹ️ Fallback: {devices[0].get('nickname', 'Unknown')}")
         return True
     
-    print("❌ Розеток НЕТ")
+    print("⚠️ Розеток НЕТ")
     return False
 
 def power_present():
-    if not device_id:
-        return True
+    if not device_id: return True
     
     try:
         r = requests.post(
@@ -94,11 +91,8 @@ def power_present():
         ).json()
         
         response_data = r["result"]["responseData"]
-        device_on = response_data.get("device_on", False) if "device_on" in response_data else True
-        print(f"🔌 Статус розетки: {'ON' if device_on else 'OFF'}")
-        return device_on
-    except Exception as e:
-        print(f"⚠️ Power error: {e}")
+        return response_data.get("device_on", True) if "device_on" in response_data else True
+    except:
         return True
 
 # ================== DTEK 2.2 ==================
@@ -122,8 +116,7 @@ async def power_job(context: ContextTypes.DEFAULT_TYPE):
     global last_state, power_off_at
     state = power_present()
     
-    if state == last_state:
-        return
+    if state == last_state: return
     
     now = kyiv_time()
     if not state:
@@ -133,30 +126,31 @@ async def power_job(context: ContextTypes.DEFAULT_TYPE):
     else:
         minutes = int((time.time() - power_off_at) / 60) if power_off_at else 0
         await context.bot.send_message(chat_id=CHANNEL_ID, text=f"🔌 Світло зʼявилось — {now}\n⏱️ Не було: {minutes} хв")
-        print(f"🔌 СВІТЛО Є: {now} ({minutes}хв без)")
+        print(f"🔌 СВІТЛО Є: {now}")
     
     last_state = state
 
-# ================== MAIN ==================
-async def main():
+# ================== RAILWAY COMPATIBLE MAIN ==================
+def main():
     print("🚀 === SVITLOBOT START ===")
     
     cloud_login()
     tplink_ok = fetch_device_id()
-    print(f"🔌 TP-Link: {'✅ OK' if tplink_ok else '⚠️ NO PLUG'}")
+    print(f"🔌 TP-Link: {'✅ OK' if tplink_ok else '⚠️ NO'}")
     
     print("🤖 Telegram bot...")
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     
-    print(f"✅ JobQueue: {'OK' if app.job_queue else 'MISSING - встанови [job-queue]'}")
+    print(f"✅ JobQueue: {'OK' if app.job_queue else 'FAIL'}")
     
-    if app.job_queue:
-        app.add_handler(MessageHandler((filters.TEXT | filters.CAPTION) & ~filters.COMMAND, handle_message))
-        app.job_queue.run_repeating(power_job, interval=60, first=10)
-        print("✅ JobQueue активний!")
+    app.add_handler(MessageHandler((filters.TEXT | filters.CAPTION) & ~filters.COMMAND, handle_message))
+    app.job_queue.run_repeating(power_job, interval=60, first=10)
     
-    print("🎉 DTEK + TP-Link МОНІТОРИНГ!")
-    await app.run_polling()
+    print("🎉 ✅ ✅ DTEK + TP-Link АКТИВНІ!")
+    print("🚀 Railway-сумісний polling...")
+    
+    # ✅ RAILWAY FIX: синхронний run_polling
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
