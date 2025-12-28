@@ -15,7 +15,7 @@ from telegram.ext import (
 
 # ================== CONFIG ==================
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-CHANNEL_ID = int(os.environ["CHANNEL_ID"])  # -1003534080985
+CHANNEL_ID = int(os.environ["CHANNEL_ID"])
 
 TAPO_EMAIL = os.environ["TAPO_USERNAME"]
 TAPO_PASSWORD = os.environ["TAPO_PASSWORD"]
@@ -29,6 +29,7 @@ device_id = None
 last_power_state = None
 power_off_at = None
 app = None
+power_task = None
 
 
 def kyiv_time():
@@ -80,12 +81,9 @@ def build_22_message(text: str) -> str | None:
         return None
     
     header = lines[0]
-    
-    # Шукаємо блок 2.2
-    for i, line in enumerate(lines):
+    for line in lines:
         if "2.2" in line and ("Підгрупа" in line or "підгрупу" in line):
-            return f"{header}\n{line}"
-    
+            return f"{header}\n\n{line}"
     return None
 
 
@@ -97,6 +95,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def power_checker():
+    """✅ Паралельна перевірка світла"""
     global last_power_state, power_off_at
     while True:
         try:
@@ -111,30 +110,43 @@ async def power_checker():
                     await app.bot.send_message(chat_id=CHANNEL_ID, text=f"🔌 Світло зʼявилось — {now}\n⏱️ Не було: {minutes} хв")
                 last_power_state = state
         except Exception as e:
-            print(f"Помилка перевірки: {e}")
+            print(f"❌ Помилка перевірки: {e}")
         await asyncio.sleep(CHECK_INTERVAL)
 
 
 async def main():
-    global app
-    print("🚀 Ініціалізація TP-Link...")
+    global app, power_task
     
+    print("🚀 Ініціалізація TP-Link...")
     cloud_login()
     fetch_device_id()
-    print(f"✅ Знайдено Tapo: {device_id[:8]}...")
+    print(f"✅ Tapo: {device_id[:8]}...")
     
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(MessageHandler((filters.TEXT | filters.CAPTION) & ~filters.COMMAND, handle_message))
     
-    # Запускаємо перевірку паралельно
-    asyncio.create_task(power_checker())
+    # ✅ Запускаємо перевірку ПАРАЛЕЛЬНО з polling
+    power_task = asyncio.create_task(power_checker())
     
     print(f"🚀 Бот запущено! Перевірка кожні {CHECK_INTERVAL}с")
     await app.run_polling()
 
 
-if __name__ == "__main__":
+# ✅ Railway/Heroku fix: перевірка event loop
+def run_bot():
     try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # Railway уже має loop — використовуємо nest_asyncio або run_forever
+            asyncio.get_event_loop().run_until_complete(main())
+        else:
+            asyncio.run(main())
+    except RuntimeError:
+        # Fallback для Railway
+        import nest_asyncio
+        nest_asyncio.apply()
         asyncio.run(main())
-    except KeyboardInterrupt:
-        print("🛑 Зупинено")
+
+
+if __name__ == "__main__":
+    run_bot()
