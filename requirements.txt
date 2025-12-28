@@ -1,2 +1,4 @@
-python-telegram-bot==21.7
-requests
+pip uninstall python-telegram-bot
+pip install "python-telegram-bot[job-queue]"==20.7
+# або для останньої
+pip install python-telegram-bot --upgrade
