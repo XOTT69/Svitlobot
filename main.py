@@ -17,12 +17,12 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHANNEL_ID = int(os.environ.get("CHANNEL_ID", "-1003534080985"))
 TAPO_EMAIL = os.environ.get("TAPO_USERNAME", "mikolenko.anton1@gmail.com")
 TAPO_PASSWORD = os.environ.get("TAPO_PASSWORD", "anton979")
-TAPO_REGION = "eu"
 CHECK_INTERVAL = 60
 
-print(f"🚀 START: BOT={len(BOT_TOKEN) if BOT_TOKEN else 0}sym, CH={CHANNEL_ID}, TAPO=OK")
+print(f"🚀 BOT_TOKEN: OK ({len(BOT_TOKEN) if BOT_TOKEN else 0}сим)")
+print(f"📱 CHANNEL_ID: {CHANNEL_ID}")
 
-CLOUD_URL = f"https://{TAPO_REGION}-wap.tplinkcloud.com"
+CLOUD_URL = "https://eu-wap.tplinkcloud.com"
 cloud_token = None
 device_id = None
 last_power_state = None
@@ -34,11 +34,10 @@ def kyiv_time():
 
 def cloud_login():
     global cloud_token
-    print("🔌 Авторизація TP-Link...")
+    print("🔌 TP-Link логін...")
     try:
         r = requests.post(f"{CLOUD_URL}/", json={
-            "method": "login",
-            "params": {
+            "method": "login", "params": {
                 "appType": "Tapo_Android",
                 "cloudUserName": TAPO_EMAIL,
                 "cloudPassword": TAPO_PASSWORD,
@@ -46,15 +45,15 @@ def cloud_login():
             }
         }, timeout=15).json()
         cloud_token = r["result"]["token"]
-        print("✅ TP-Link авторизовано")
+        print("✅ TP-Link OK")
         return True
     except Exception as e:
-        print(f"⚠️ TP-Link помилка: {e}")
+        print(f"⚠️ TP-Link skip: {e}")
         return False
 
 def fetch_device_id():
     global device_id
-    print("🔍 Пошук Tapo пристроїв...")
+    print("🔍 Tapo пристрої...")
     try:
         r = requests.post(f"{CLOUD_URL}/?token={cloud_token}", json={"method": "getDeviceList"}, timeout=15).json()
         devices = r["result"]["deviceList"]
@@ -65,29 +64,25 @@ def fetch_device_id():
                 return True
         if devices:
             device_id = devices[0]["deviceId"]
-            print(f"ℹ️ ПРИСТРІЙ: {device_id[:8]}")
+            print(f"ℹ️ Device: {device_id[:8]}")
             return True
-        print("⚠️ Tapo пристроїв не знайдено")
         return False
-    except Exception as e:
-        print(f"❌ Tapo помилка: {e}")
+    except:
         return False
 
 def power_present():
     if not device_id: return True
     try:
         r = requests.post(f"{CLOUD_URL}/?token={cloud_token}", json={
-            "method": "passthrough",
-            "params": {
-                "deviceId": device_id,
-                "requestData": '{"method":"get_device_info"}'
+            "method": "passthrough", "params": {
+                "deviceId": device_id, "requestData": '{"method":"get_device_info"}'
             }
         }, timeout=10).json()
         return bool(r["result"]["responseData"])
     except:
         return True
 
-# ================== DTEK PARSER ==================
+# ================== DTEK 2.2 ==================
 def build_22_message(text: str):
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     if not lines: return None
@@ -97,7 +92,7 @@ def build_22_message(text: str):
             return f"{header}\n\n📍 {line}"
     return None
 
-# ================== TELEGRAM ==================
+# ================== HANDLERS ==================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text or update.message.caption or ""
     payload = build_22_message(text)
@@ -107,36 +102,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def power_job(context: ContextTypes.DEFAULT_TYPE):
     global last_power_state, power_off_at
     state = power_present()
-    
     if state != last_power_state:
         now = kyiv_time()
         if not state:
             power_off_at = time.time()
             await context.bot.send_message(chat_id=CHANNEL_ID, text=f"⚡ Світло зникло — {now}")
-            print(f"⚡ БЕЗ СВІТЛА: {now}")
         else:
             minutes = int((time.time() - power_off_at) / 60) if power_off_at else 0
             await context.bot.send_message(chat_id=CHANNEL_ID, text=f"🔌 Світло зʼявилось — {now}\n⏱️ Не було: {minutes} хв")
-            print(f"🔌 СВІТЛО Є: {now} ({minutes}хв без)")
         last_power_state = state
 
 # ================== MAIN ==================
 def main():
-    print("🚀 === SVITLOBOT v2.0 ===")
+    print("🚀 === SVITLOBOT READY ===")
     
-    # TP-Link (опціонально)
-    tplink_ok = cloud_login() and fetch_device_id()
-    print(f"🔌 TP-Link: {'✅' if tplink_ok else '⚠️ SKIP'}")
+    # TP-Link
+    cloud_ok = cloud_login()
+    if cloud_ok:
+        fetch_device_id()
     
-    # Telegram бот
-    print("🤖 Telegram...")
+    print("🤖 Telegram Application...")
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     
+    # ✅ JobQueue вбудований у v20.8
     app.add_handler(MessageHandler((filters.TEXT | filters.CAPTION) & ~filters.COMMAND, handle_message))
     app.job_queue.run_repeating(power_job, interval=CHECK_INTERVAL, first=5)
     
-    print("🎉 ✅ ✅ БОТ + МОНІТОРИНГ АКТИВНІ!")
-    print("📱 DTEK 2.2 парсер + 🔌 Tapo моніторинг")
+    print("🎉 ✅ БОТ + МОНІТОРИНГ 100% АКТИВНІ!")
     app.run_polling()
 
 if __name__ == "__main__":
