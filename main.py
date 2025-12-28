@@ -1,5 +1,6 @@
 import os
 import time
+import asyncio
 import requests
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -12,149 +13,121 @@ from telegram.ext import (
     filters,
 )
 
-# ================== CONFIG ==================
+# ================== ENV ==================
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-CHANNEL_ID = int(os.environ.get("CHANNEL_ID", "-1003534080985"))
-
+CHANNEL_ID = int(os.environ["CHANNEL_ID"])
 TAPO_EMAIL = os.environ["TAPO_USERNAME"]
 TAPO_PASSWORD = os.environ["TAPO_PASSWORD"]
 
-CLOUD_URL = "https://eu-wap.tplinkcloud.com"
-CHECK_INTERVAL = 60
-# ============================================
-
-cloud_token = None
-device_id = None
-last_power_state = None
-power_off_at = None
-
-
-# ================== UTIL ==================
+# ================== TIME ==================
 def kyiv_time():
     return datetime.now(ZoneInfo("Europe/Kyiv")).strftime("%H:%M")
 
-
 # ================== TP-LINK CLOUD ==================
-def cloud_login():
+CLOUD_URL = "https://eu-wap.tplinkcloud.com"
+cloud_token = None
+device_id = None
+last_state = None
+power_off_at = None
+
+
+def tp_login():
     global cloud_token
-    r = requests.post(
-        f"{CLOUD_URL}/",
-        json={
-            "method": "login",
-            "params": {
-                "appType": "Tapo_Android",
-                "cloudUserName": TAPO_EMAIL,
-                "cloudPassword": TAPO_PASSWORD,
-                "terminalUUID": "svitlobot"
-            }
-        },
-        timeout=15
-    ).json()
+    r = requests.post(CLOUD_URL, json={
+        "method": "login",
+        "params": {
+            "appType": "Tapo_Android",
+            "cloudUserName": TAPO_EMAIL,
+            "cloudPassword": TAPO_PASSWORD,
+            "terminalUUID": "svitlobot"
+        }
+    }, timeout=15).json()
     cloud_token = r["result"]["token"]
 
 
-def fetch_device_id():
+def fetch_device():
     global device_id
-    r = requests.post(
-        f"{CLOUD_URL}/?token={cloud_token}",
-        json={"method": "getDeviceList"},
-        timeout=15
+    r = requests.post(f"{CLOUD_URL}/?token={cloud_token}",
+        json={"method": "getDeviceList"}, timeout=15
     ).json()
-
     for d in r["result"]["deviceList"]:
-        if "PLUG" in (d.get("deviceType") or "").upper():
+        if "PLUG" in d.get("deviceType", "").upper():
             device_id = d["deviceId"]
             return
-
-    # fallback
-    device_id = r["result"]["deviceList"][0]["deviceId"]
 
 
 def power_present():
     try:
-        r = requests.post(
-            f"{CLOUD_URL}/?token={cloud_token}",
-            json={
-                "method": "passthrough",
-                "params": {
-                    "deviceId": device_id,
-                    "requestData": '{"method":"get_device_info"}'
-                }
-            },
-            timeout=10
-        ).json()
-        return bool(r["result"]["responseData"])
+        r = requests.post(f"{CLOUD_URL}/?token={cloud_token}", json={
+            "method": "passthrough",
+            "params": {
+                "deviceId": device_id,
+                "requestData": '{"method":"get_device_info"}'
+            }
+        }, timeout=10).json()
+        return True
     except:
         return False
 
 
-# ================== 2.2 PARSER ==================
+# ================== DTEK FILTER ==================
 def build_22_message(text: str):
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     if not lines:
         return None
-
     header = lines[0]
-    for line in lines:
-        if "2.2" in line and ("Підгрупа" in line or "підгрупу" in line):
-            return f"{header}\n\n📍 {line}"
-
+    for l in lines:
+        if "2.2" in l and ("Підгрупа" in l or "підгрупу" in l):
+            return f"{header}\n\n📍 {l}"
     return None
 
 
 # ================== HANDLERS ==================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text or update.message.caption or ""
-    payload = build_22_message(text)
-    if payload:
-        await context.bot.send_message(chat_id=CHANNEL_ID, text=payload)
+    msg = build_22_message(text)
+    if msg:
+        await context.bot.send_message(chat_id=CHANNEL_ID, text=msg)
 
 
-async def power_job(context: ContextTypes.DEFAULT_TYPE):
-    global last_power_state, power_off_at
-
-    state = power_present()
-    if state != last_power_state:
-        now = kyiv_time()
-
-        if not state:
-            power_off_at = time.time()
-            await context.bot.send_message(
-                chat_id=CHANNEL_ID,
-                text=f"⚡ Світло зникло — {now}"
-            )
-        else:
-            minutes = int((time.time() - power_off_at) / 60) if power_off_at else 0
-            await context.bot.send_message(
-                chat_id=CHANNEL_ID,
-                text=f"🔌 Світло зʼявилось — {now}\n⏱️ Не було: {minutes} хв"
-            )
-
-        last_power_state = state
+async def power_loop(app):
+    global last_state, power_off_at
+    while True:
+        state = power_present()
+        if state != last_state:
+            now = kyiv_time()
+            if not state:
+                power_off_at = time.time()
+                await app.bot.send_message(
+                    chat_id=CHANNEL_ID,
+                    text=f"⚡ Світло зникло — {now}"
+                )
+            else:
+                mins = int((time.time() - power_off_at) / 60) if power_off_at else 0
+                await app.bot.send_message(
+                    chat_id=CHANNEL_ID,
+                    text=f"🔌 Світло зʼявилось — {now}\n⏱️ Не було: {mins} хв"
+                )
+            last_state = state
+        await asyncio.sleep(60)
 
 
 # ================== MAIN ==================
-def main():
+async def main():
     print("🚀 SVITLOBOT START")
 
-    cloud_login()
-    fetch_device_id()
+    tp_login()
+    fetch_device()
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(MessageHandler(
+        (filters.TEXT | filters.CAPTION) & ~filters.COMMAND,
+        handle_message
+    ))
 
-    app.add_handler(
-        MessageHandler(
-            (filters.TEXT | filters.CAPTION) & ~filters.COMMAND,
-            handle_message
-        )
-    )
-
-    app.job_queue.run_repeating(power_job, interval=CHECK_INTERVAL, first=5)
-
-    print("✅ Bot started")
-    app.run_polling()
+    asyncio.create_task(power_loop(app))
+    await app.run_polling(close_loop=False)
 
 
 if __name__ == "__main__":
-    main()
-
+    asyncio.run(main())
