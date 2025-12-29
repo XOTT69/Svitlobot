@@ -1,7 +1,7 @@
 import os
 import asyncio
-from datetime import datetime
 import requests
+from datetime import datetime
 from tapo import ApiClient
 
 TP_EMAIL = os.environ["TP_EMAIL"]
@@ -11,22 +11,25 @@ TP_DEVICE_ID = os.environ["TP_DEVICE_ID"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 CHAT_ID = os.environ["CHAT_ID"]
 
-CHECK_INTERVAL = 60  # секунд
+CHECK_INTERVAL = 60
 last_state = None
 
-def send(text):
+
+def send(text: str):
     requests.post(
         f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-        json={"chat_id": CHAT_ID, "text": text}
+        json={"chat_id": CHAT_ID, "text": text},
+        timeout=10
     )
+
 
 async def check():
     global last_state
 
     client = ApiClient(TP_EMAIL, TP_PASSWORD)
-    devices = await client.devices()
 
-    device = next(d for d in devices if d.device_id == TP_DEVICE_ID)
+    # ⬇️ ГОЛОВНЕ: отримуємо пристрій НАПРЯМУ по device_id
+    device = await client.get_device_by_id(TP_DEVICE_ID)
 
     while True:
         try:
@@ -36,13 +39,14 @@ async def check():
             state = "off"
 
         if state != last_state:
-            t = datetime.now().strftime("%H:%M")
+            now = datetime.now().strftime("%H:%M")
             if state == "on":
-                send(f"💡 Світло ЗʼЯВИЛОСЬ ({t})")
+                send(f"💡 Світло ЗʼЯВИЛОСЬ ({now})")
             else:
-                send(f"🚫 Світло ЗНИКЛО ({t})")
+                send(f"🚫 Світло ЗНИКЛО ({now})")
             last_state = state
 
         await asyncio.sleep(CHECK_INTERVAL)
+
 
 asyncio.run(check())
