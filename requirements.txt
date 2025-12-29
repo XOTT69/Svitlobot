@@ -1,2 +1,2 @@
-python-telegram-bot==20.7
-tapo==0.8.6
+python-tapo
+requests
