@@ -1,28 +1,44 @@
-iimport os
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+import os
+import asyncio
+from datetime import datetime
 from tapo import ApiClient
+import requests
 
-BOT_TOKEN = "8531102609:AAHzEoJR0WT1yp4tUDa7uvGWw_5V2MkrUrA"
-CHAT_ID = -1003504400394
-TAPO_EMAIL = "mikolenko.anton1@gmail.com"
-TAPO_PASS = "anton979"
+TP_EMAIL = os.environ["TP_EMAIL"]
+TP_PASSWORD = os.environ["TP_PASSWORD"]
+TP_DEVICE_IP = os.environ["TP_DEVICE_IP"]
 
-client = ApiClient(TAPO_EMAIL, TAPO_PASS)
+BOT_TOKEN = os.environ["BOT_TOKEN"]
+CHAT_ID = os.environ["CHAT_ID"]
 
-async def check_light(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        device = await client.p110("192.168.50.253")  # ВАШ IP!
-        state = await device.state()
-        status = "✅ Світло Є" if state.state else "❌ Світла нема"
-        await context.bot.send_message(CHAT_ID, f"{status}")
-    except Exception as e:
-        await context.bot.send_message(CHAT_ID, f"❌ {str(e)}")
+CHECK_INTERVAL = 60  # секунд
 
-async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await context.bot.send_message(CHAT_ID, "🟢 Бот працює!")
+last_state = None
 
-app = ApplicationBuilder().token(BOT_TOKEN).build()
-app.add_handler(CommandHandler("light", check_light))
-app.add_handler(CommandHandler("test", test))
-app.run_polling()
+def send(msg):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    requests.post(url, json={"chat_id": CHAT_ID, "text": msg})
+
+async def check():
+    global last_state
+    client = ApiClient(TP_EMAIL, TP_PASSWORD)
+    device = await client.p110(TP_DEVICE_IP)
+
+    while True:
+        try:
+            await device.get_device_info()
+            state = "on"
+        except:
+            state = "off"
+
+        if state != last_state:
+            time = datetime.now().strftime("%H:%M")
+            if state == "on":
+                send(f"💡 Світло ЗʼЯВИЛОСЬ ({time})")
+            else:
+                send(f"🚫 Світло ЗНИКЛО ({time})")
+            last_state = state
+
+        await asyncio.sleep(CHECK_INTERVAL)
+
+asyncio.run(check())
